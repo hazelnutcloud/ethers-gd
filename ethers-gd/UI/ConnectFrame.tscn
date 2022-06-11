@@ -1,7 +1,7 @@
 [gd_scene load_steps=4 format=2]
 
 [ext_resource path="res://UI/ConnectFrame.gd" type="Script" id=1]
-[ext_resource path="res://addons/ethers-gd/classes/frame_provider.gdns" type="Script" id=2]
+[ext_resource path="res://addons/ethers-gd/classes/json_rpc_provider.gdns" type="Script" id=2]
 [ext_resource path="res://addons/ethers-gd/classes/async_executor_driver.gdns" type="Script" id=3]
 
 [node name="ConnectFrame" type="Control"]
@@ -20,6 +20,7 @@ text = "Connect to Frame"
 
 [node name="FrameProvider" type="Node" parent="."]
 script = ExtResource( 2 )
+url = "http://127.0.0.1:1248"
 
 [node name="AsyncExecuterDriver" type="Node" parent="."]
 script = ExtResource( 3 )

@@ -1,6 +1,6 @@
 mod frame_provider;
 
-use frame_provider::FrameProvider;
+use frame_provider::JsonRpcProvider;
 use gdnative::prelude::*;
 use tokio::{task::LocalSet, runtime::{Runtime, Builder}};
 
@@ -67,7 +67,7 @@ fn init(handle: InitHandle) {
     gdnative::tasks::set_executor(EXECUTOR.with(|e| *e));
 
     handle.add_class::<AsyncExecutorDriver>();
-    handle.add_class::<FrameProvider>();
+    handle.add_class::<JsonRpcProvider>();
 }
 
 godot_init!(init);
