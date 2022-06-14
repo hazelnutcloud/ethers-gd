@@ -1,6 +1,7 @@
-mod frame_provider;
+mod ethers_provider;
+mod remote_signer;
 
-use frame_provider::JsonRpcProvider;
+use ethers_provider::EthersProvider;
 use gdnative::prelude::*;
 use tokio::{task::LocalSet, runtime::{Runtime, Builder}};
 
@@ -67,7 +68,7 @@ fn init(handle: InitHandle) {
     gdnative::tasks::set_executor(EXECUTOR.with(|e| *e));
 
     handle.add_class::<AsyncExecutorDriver>();
-    handle.add_class::<JsonRpcProvider>();
+    handle.add_class::<EthersProvider>();
 }
 
 godot_init!(init);
