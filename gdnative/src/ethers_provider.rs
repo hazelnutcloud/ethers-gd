@@ -12,13 +12,12 @@ use reqwest::{
     Client, Url,
 };
 
-use crate::{remote_signer::RemoteSignerMiddleware, AsyncExecutorDriver};
+use crate::AsyncExecutorDriver;
 
 #[derive(Debug, Clone)]
 enum ActiveProvider {
     JsonRpc(Provider<Http>),
     LocalWallet(SignerMiddleware<Provider<Http>, LocalWallet>),
-    RemoteWallet(RemoteSignerMiddleware),
 }
 
 #[derive(NativeClass, Debug, Clone)]
@@ -26,9 +25,8 @@ enum ActiveProvider {
 #[register_with(Self::_register)]
 pub struct EthersProvider {
     url: String,
-    chain_id: u64,
     address: Option<Address>,
-    active_provider: ActiveProvider,
+    active_provider: Option<ActiveProvider>,
 }
 
 #[methods]
@@ -36,35 +34,28 @@ impl EthersProvider {
     fn new(_owner: &Node) -> Self {
         let url = "http://localhost:8545".parse::<Url>().unwrap();
 
-        let json_rpc_provider = Self::_provider_from(url.clone());
-
         Self {
             url: url.to_string(),
-            chain_id: 1,
             address: None,
-            active_provider: ActiveProvider::JsonRpc(json_rpc_provider),
+            active_provider: None,
         }
     }
 
     #[export]
-    fn _ready(&self, owner: &Node) {
+    fn _ready(&mut self, owner: &Node) {
         let async_executor_driver = AsyncExecutorDriver::new_instance();
         owner.add_child(async_executor_driver, true);
+
+        let json_rpc = Self::_provider_from(self.url.parse().unwrap());
+        self.active_provider = Some(ActiveProvider::JsonRpc(json_rpc));
     }
 
     #[export]
     fn connect_local_wallet(&mut self, _owner: &Node, keystore_path: String, password: String) {
         let local_signer = self._local_wallet_from(&keystore_path, &password);
         let address = local_signer.address();
-        self.active_provider = ActiveProvider::LocalWallet(local_signer);
+        self.active_provider = Some(ActiveProvider::LocalWallet(local_signer));
         self.address = Some(address);
-    }
-
-    #[export]
-    fn connect_remote_wallet(&mut self, _owner: &Node, address: Vec<u8>) {
-        let address = Address::from_slice(&address);
-        self.address = Some(address);
-        self.active_provider = ActiveProvider::RemoteWallet(self._remote_wallet_from(address));
     }
 
     fn _provider_from(url: Url) -> Provider<Http> {
@@ -102,26 +93,17 @@ impl EthersProvider {
             LocalWallet::decrypt_keystore(keypath, password).unwrap()
         };
 
-        let provider = match self.active_provider {
-            ActiveProvider::JsonRpc(json_rpc) => json_rpc,
-            ActiveProvider::LocalWallet(local) => *local.provider(),
-            ActiveProvider::RemoteWallet(remote) => *remote.provider(),
+        let provider = match self.active_provider.as_ref().unwrap() {
+            ActiveProvider::JsonRpc(json_rpc) => json_rpc.clone(),
+            ActiveProvider::LocalWallet(local) => local.provider().clone(),
         };
 
         SignerMiddleware::new(provider, wallet)
     }
 
-    fn _remote_wallet_from(&self, address: Address) -> RemoteSignerMiddleware {
-        let provider = match self.active_provider {
-            ActiveProvider::JsonRpc(json_rpc) => json_rpc,
-            ActiveProvider::LocalWallet(local) => *local.provider(),
-            ActiveProvider::RemoteWallet(remote) => *remote.provider(),
-        };
-        RemoteSignerMiddleware::new(provider, self.chain_id, address)
-    }
-
     fn _register(builder: &ClassBuilder<Self>) {
         builder.method("get_accounts", Async::new(GetAccounts)).done();
+        builder.method("sign_message", Async::new(SignMessage)).done();
 
         builder
             .property("url")
@@ -136,7 +118,7 @@ impl EthersProvider {
     }
 
     fn _set_url(&mut self, _owner: TRef<Node>, url: String) {
-        self.url = url.clone();
+        self.url = url;
     }
 }
 
@@ -148,10 +130,9 @@ impl AsyncMethod<EthersProvider> for GetAccounts {
     fn spawn_with(&self, spawner: gdnative::tasks::Spawner<'_, EthersProvider>) {
         spawner.spawn(|_ctx, this, _args| {
             let provider = this.map(|provider, _owner| {
-                match provider.active_provider {
-                    ActiveProvider::JsonRpc(json_rpc) => json_rpc.clone(),
-                    ActiveProvider::LocalWallet(local) => local.provider().clone(),
-                    ActiveProvider::RemoteWallet(remote) => remote.provider().clone(),
+                match provider.active_provider.as_ref().unwrap() {
+                    ActiveProvider::JsonRpc(ref json_rpc) => json_rpc.clone(),
+                    ActiveProvider::LocalWallet(ref local) => local.provider().clone(),
                 }
             }).unwrap();
             async move {
@@ -175,19 +156,18 @@ struct SignMessage;
 
 impl AsyncMethod<EthersProvider> for SignMessage {
     fn spawn_with(&self, spawner: gdnative::tasks::Spawner<'_, EthersProvider>) {
-        spawner.spawn(|_ctx, this, args| {
+        spawner.spawn(|_ctx, this, mut args| {
             let provider = this.map(|provider, _owner| {
-                match provider.active_provider {
-                    ActiveProvider::JsonRpc(json_rpc) => json_rpc.clone(),
-                    ActiveProvider::LocalWallet(local) => local.provider().clone(),
-                    ActiveProvider::RemoteWallet(remote) => remote.provider().clone(),
+                match provider.active_provider.as_ref().unwrap() {
+                    ActiveProvider::JsonRpc(ref json_rpc) => json_rpc.clone(),
+                    ActiveProvider::LocalWallet(ref local) => local.provider().clone(),
                 }
             }).unwrap();
             let msg = args.read::<String>().get().unwrap();
-            let address = this.map(|provider, _owner| provider.address.unwrap().clone()).unwrap();
+            let address = this.map(|provider, _owner| provider.address.unwrap()).unwrap();
             async move {
-                let signature = provider.sign(msg.bytes(), &address).await.unwrap();
-                signature.to_vec().owned_to_variant()
+                let signature = provider.sign(msg.into_bytes(), &address).await.unwrap();
+                signature.to_string().owned_to_variant()
             }
         });
     }

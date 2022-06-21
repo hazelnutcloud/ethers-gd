@@ -1,5 +1,4 @@
 mod ethers_provider;
-mod remote_signer;
 
 use ethers_provider::EthersProvider;
 use gdnative::prelude::*;
