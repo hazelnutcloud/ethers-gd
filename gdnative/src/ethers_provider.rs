@@ -16,18 +16,15 @@ use crate::{remote_signer::RemoteSignerMiddleware, AsyncExecutorDriver};
 
 #[derive(Debug, Clone)]
 enum ActiveProvider {
-    JsonRpc,
-    LocalWallet,
-    RemoteWallet,
+    JsonRpc(Provider<Http>),
+    LocalWallet(SignerMiddleware<Provider<Http>, LocalWallet>),
+    RemoteWallet(RemoteSignerMiddleware),
 }
 
 #[derive(NativeClass, Debug, Clone)]
 #[inherit(Node)]
 #[register_with(Self::_register)]
 pub struct EthersProvider {
-    json_rpc_provider: Provider<Http>,
-    remote_signer: Option<RemoteSignerMiddleware>,
-    local_signer: Option<SignerMiddleware<Provider<Http>, LocalWallet>>,
     url: String,
     chain_id: u64,
     address: Option<Address>,
@@ -42,13 +39,10 @@ impl EthersProvider {
         let json_rpc_provider = Self::_provider_from(url.clone());
 
         Self {
-            json_rpc_provider,
             url: url.to_string(),
-            remote_signer: None,
-            local_signer: None,
             chain_id: 1,
             address: None,
-            active_provider: ActiveProvider::JsonRpc,
+            active_provider: ActiveProvider::JsonRpc(json_rpc_provider),
         }
     }
 
@@ -62,17 +56,15 @@ impl EthersProvider {
     fn connect_local_wallet(&mut self, _owner: &Node, keystore_path: String, password: String) {
         let local_signer = self._local_wallet_from(&keystore_path, &password);
         let address = local_signer.address();
-        self.local_signer = Some(local_signer);
+        self.active_provider = ActiveProvider::LocalWallet(local_signer);
         self.address = Some(address);
-        self.active_provider = ActiveProvider::LocalWallet;
     }
 
     #[export]
     fn connect_remote_wallet(&mut self, _owner: &Node, address: Vec<u8>) {
         let address = Address::from_slice(&address);
-        self.remote_signer = Some(self._remote_wallet_from(address));
         self.address = Some(address);
-        self.active_provider = ActiveProvider::RemoteWallet;
+        self.active_provider = ActiveProvider::RemoteWallet(self._remote_wallet_from(address));
     }
 
     fn _provider_from(url: Url) -> Provider<Http> {
@@ -110,13 +102,22 @@ impl EthersProvider {
             LocalWallet::decrypt_keystore(keypath, password).unwrap()
         };
 
-        let provider = self.json_rpc_provider.to_owned();
+        let provider = match self.active_provider {
+            ActiveProvider::JsonRpc(json_rpc) => json_rpc,
+            ActiveProvider::LocalWallet(local) => *local.provider(),
+            ActiveProvider::RemoteWallet(remote) => *remote.provider(),
+        };
 
         SignerMiddleware::new(provider, wallet)
     }
 
     fn _remote_wallet_from(&self, address: Address) -> RemoteSignerMiddleware {
-        RemoteSignerMiddleware::new(self.json_rpc_provider.to_owned(), self.chain_id, address)
+        let provider = match self.active_provider {
+            ActiveProvider::JsonRpc(json_rpc) => json_rpc,
+            ActiveProvider::LocalWallet(local) => *local.provider(),
+            ActiveProvider::RemoteWallet(remote) => *remote.provider(),
+        };
+        RemoteSignerMiddleware::new(provider, self.chain_id, address)
     }
 
     fn _register(builder: &ClassBuilder<Self>) {
@@ -136,8 +137,6 @@ impl EthersProvider {
 
     fn _set_url(&mut self, _owner: TRef<Node>, url: String) {
         self.url = url.clone();
-
-        self.json_rpc_provider = Self::_provider_from(url.parse().unwrap());
     }
 }
 
@@ -148,9 +147,13 @@ struct GetAccounts;
 impl AsyncMethod<EthersProvider> for GetAccounts {
     fn spawn_with(&self, spawner: gdnative::tasks::Spawner<'_, EthersProvider>) {
         spawner.spawn(|_ctx, this, _args| {
-            let provider = this
-                .map(|provider, _owner| provider.json_rpc_provider.clone())
-                .unwrap();
+            let provider = this.map(|provider, _owner| {
+                match provider.active_provider {
+                    ActiveProvider::JsonRpc(json_rpc) => json_rpc.clone(),
+                    ActiveProvider::LocalWallet(local) => local.provider().clone(),
+                    ActiveProvider::RemoteWallet(remote) => remote.provider().clone(),
+                }
+            }).unwrap();
             async move {
                 let accounts = provider.get_accounts().await.unwrap();
 
@@ -163,5 +166,29 @@ impl AsyncMethod<EthersProvider> for GetAccounts {
                     .to_variant()
             }
         })
+    }
+}
+
+/// sign a simple message
+/// sends a "eth_sign" json rpc
+struct SignMessage;
+
+impl AsyncMethod<EthersProvider> for SignMessage {
+    fn spawn_with(&self, spawner: gdnative::tasks::Spawner<'_, EthersProvider>) {
+        spawner.spawn(|_ctx, this, args| {
+            let provider = this.map(|provider, _owner| {
+                match provider.active_provider {
+                    ActiveProvider::JsonRpc(json_rpc) => json_rpc.clone(),
+                    ActiveProvider::LocalWallet(local) => local.provider().clone(),
+                    ActiveProvider::RemoteWallet(remote) => remote.provider().clone(),
+                }
+            }).unwrap();
+            let msg = args.read::<String>().get().unwrap();
+            let address = this.map(|provider, _owner| provider.address.unwrap().clone()).unwrap();
+            async move {
+                let signature = provider.sign(msg.bytes(), &address).await.unwrap();
+                signature.to_vec().owned_to_variant()
+            }
+        });
     }
 }
