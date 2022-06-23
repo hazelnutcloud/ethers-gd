@@ -11,6 +11,7 @@ use reqwest::{
     header::{self, HeaderMap, HeaderValue},
     Client, Url,
 };
+use serde_json::Value;
 
 use crate::AsyncExecutorDriver;
 
@@ -104,6 +105,7 @@ impl EthersProvider {
     fn _register(builder: &ClassBuilder<Self>) {
         builder.method("get_accounts", Async::new(GetAccounts)).done();
         builder.method("sign_message", Async::new(SignMessage)).done();
+        builder.method("request", Async::new(Request)).done();
 
         builder
             .property("url")
@@ -164,11 +166,35 @@ impl AsyncMethod<EthersProvider> for SignMessage {
                 }
             }).unwrap();
             let msg = args.read::<String>().get().unwrap();
-            let address = this.map(|provider, _owner| provider.address.unwrap()).unwrap();
+            let address = args.read::<Vec<u8>>().get().unwrap();
             async move {
-                let signature = provider.sign(msg.into_bytes(), &address).await.unwrap();
+                let signature = provider.sign(msg.into_bytes(), &Address::from_slice(&address)).await.unwrap();
                 signature.to_string().owned_to_variant()
             }
         });
+    }
+}
+
+/// sends a JSON RPC request
+struct Request;
+
+impl AsyncMethod<EthersProvider> for Request {
+    fn spawn_with(&self, spawner: gdnative::tasks::Spawner<'_, EthersProvider>) {
+        spawner.spawn(|_ctx, this, mut args| {
+            let method = args.read::<String>().get().unwrap();
+            let params = args.read::<String>().get().unwrap();
+
+            let params: Vec<Value> = serde_json::from_str(&params).unwrap();
+            let provider = this.map(|provider, _owner| {
+                match provider.active_provider.as_ref().unwrap() {
+                    ActiveProvider::JsonRpc(ref json_rpc) => json_rpc.clone(),
+                    ActiveProvider::LocalWallet(ref local) => local.provider().clone(),
+                }
+            }).unwrap();
+            async move {
+                let res: String = provider.request(&method, params).await.unwrap();
+                res.to_variant()
+            }
+        })
     }
 }
